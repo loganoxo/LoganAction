@@ -31,8 +31,9 @@ jobs:
       - name: 准备环境与处理大小写
         id: prep
         run: |
-          # 将 DEST_IMAGE 转换为全小写，存入环境变量供后续步骤使用
-          echo "FINAL_DEST=$(echo ${{ env.DEST_IMAGE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          # 转换小写并写入环境变量供后续步骤使用
+          FINAL_DEST=$(echo "${{ env.DEST_IMAGE }}" | tr '[:upper:]' '[:lower:]')
+          echo "FINAL_DEST=$FINAL_DEST" >> $GITHUB_ENV
 
           # 检查并输出，方便调试
           echo "源镜像: ${{ env.SOURCE_IMAGE }}"
