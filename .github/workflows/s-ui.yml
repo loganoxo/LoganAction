@@ -15,7 +15,7 @@ permissions:
 
 env:
   SOURCE_IMAGE: docker.io/alireza7/s-ui:latest
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/s-ui
 
 jobs:
   sync:
