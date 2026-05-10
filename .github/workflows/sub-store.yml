@@ -1,0 +1,54 @@
+name: 同步并发布 sub-store Docker 镜像
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "镜像版本号，例如 2.22.1-http-meta"
+        required: true
+        type: string
+        default: "2.22.1-http-meta"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  SOURCE_IMAGE: docker.io/xream/sub-store
+  DEST_IMAGE: ghcr.io/${{ github.repository_owner }}/sub-store
+
+jobs:
+  sync:
+    name: 拉取并推送镜像
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 安装 skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
+      - name: 准备环境与处理大小写
+        id: prep
+        run: |
+          # 转换小写并写入环境变量供后续步骤使用
+          FINAL_DEST=$(echo "${{ env.DEST_IMAGE }}" | tr '[:upper:]' '[:lower:]')
+          echo "FINAL_DEST=$FINAL_DEST" >> $GITHUB_ENV
+
+          # 检查并输出，方便调试
+          echo "源镜像: ${{ env.SOURCE_IMAGE }}"
+          echo "目标镜像: $FINAL_DEST"
+
+      - name: 同步版本镜像
+        run: |
+          skopeo copy --all \
+            --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+            docker://${{ env.SOURCE_IMAGE }}:${{ inputs.version }} \
+            docker://${{ env.FINAL_DEST }}:${{ inputs.version }}
+
+      - name: 同步 latest 镜像
+        run: |
+          skopeo copy --all \
+            --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+            docker://${{ env.SOURCE_IMAGE }}:latest \
+            docker://${{ env.FINAL_DEST }}:latest
