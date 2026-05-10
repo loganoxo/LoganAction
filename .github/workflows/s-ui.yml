@@ -14,12 +14,12 @@ permissions:
   packages: write
 
 env:
-  SOURCE_IMAGE: docker.io/alireza7/s-ui:latest
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/s-ui
+  SOURCE_IMAGE: docker.io/alireza7/s-ui
+  DEST_IMAGE: ghcr.io/${{ github.repository_owner }}/s-ui
 
 jobs:
   sync:
-    name: 拉取并推送 s-ui 镜像
+    name: 拉取并推送镜像
     runs-on: ubuntu-latest
 
     steps:
@@ -32,12 +32,12 @@ jobs:
         run: |
           skopeo copy --all \
             --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
-            docker://${{ env.SOURCE_IMAGE }} \
-            docker://${{ env.IMAGE_NAME }}:${{ inputs.version }}
+            docker://${{ env.SOURCE_IMAGE }}:${{ inputs.version }} \
+            docker://${{ env.DEST_IMAGE }}:${{ inputs.version }}
 
       - name: 同步 latest 镜像
         run: |
           skopeo copy --all \
             --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
-            docker://${{ env.SOURCE_IMAGE }} \
-            docker://${{ env.IMAGE_NAME }}:latest
+            docker://${{ env.SOURCE_IMAGE }}:latest \
+            docker://${{ env.DEST_IMAGE }}:latest
