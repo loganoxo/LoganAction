@@ -28,16 +28,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y skopeo
 
+      - name: 准备环境与处理大小写
+        id: prep
+        run: |
+          # 将 DEST_IMAGE 转换为全小写，存入环境变量供后续步骤使用
+          echo "FINAL_DEST=$(echo ${{ env.DEST_IMAGE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+          # 检查并输出，方便调试
+          echo "源镜像: ${{ env.SOURCE_IMAGE }}"
+          echo "目标镜像: ${{ env.FINAL_DEST }}"
+
       - name: 同步版本镜像
         run: |
           skopeo copy --all \
             --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
             docker://${{ env.SOURCE_IMAGE }}:${{ inputs.version }} \
-            docker://${{ env.DEST_IMAGE }}:${{ inputs.version }}
+            docker://${{ env.FINAL_DEST }}:${{ inputs.version }}
 
       - name: 同步 latest 镜像
         run: |
           skopeo copy --all \
             --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
             docker://${{ env.SOURCE_IMAGE }}:latest \
-            docker://${{ env.DEST_IMAGE }}:latest
+            docker://${{ env.FINAL_DEST }}:latest
