@@ -36,7 +36,7 @@ jobs:
 
           # 检查并输出，方便调试
           echo "源镜像: ${{ env.SOURCE_IMAGE }}"
-          echo "目标镜像: ${{ env.FINAL_DEST }}"
+          echo "目标镜像: $FINAL_DEST"
 
       - name: 同步版本镜像
         run: |
