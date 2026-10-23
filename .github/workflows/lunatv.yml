@@ -1,0 +1,210 @@
+name: Rebuild LunaTV (Node 22)
+
+# 作用:上游 MoonTechLab/LunaTV 的官方镜像还停在 node:20-alpine(20.x 已 EOL、无安全修复),
+# 本工作流在【自己的仓库】里替它构建:取上游最新 release 的源码,把 Dockerfile 的
+# Node 换成 22-alpine(22.x 的浮动标签,每次构建自动解析为当时最新的 22.x 补丁版),
+# 双架构构建后推到自己的 GHCR;
+#
+# 触发构建的两个条件(每小时轮询判断,任一成立就构建):
+#   1. 上游发了新 release,且该版本还没在 GHCR 里构建过;
+#   2. node:22-alpine 的 manifest digest 变了(Node 出新补丁、或 alpine 基础层更新),
+#      与上次成功构建时记录的 digest 不同——记录在仓库根目录的 node-digest.txt,
+#      每次构建成功后由 record 步骤回写;上游没发新版时,靠这条实现 Node 补丁自动跟进;
+#   另有 workflow_dispatch 手动触发:可指定上游标签,或勾 force 强制构建;
+# GitHub 不支持跨仓库事件触发,所以只能 schedule 轮询;不构建的轮次只有几次
+# API/镜像查询,成本可忽略;
+#
+# 构建方式:单 job 用 buildx 一次构建双架构,无需任何额外配置
+# (setup-buildx 的 BuildKit 本就自带跨架构构建能力,此模式已在
+# gost / sub-store-cf-tunnel 两个仓库验证);
+#
+# 产物:ghcr.io/<仓库所有者>/lunatv:<上游标签> 与 :latest 两个标签,同一 manifest;
+# 注意 <上游标签> 是"该上游版本 + 构建当时最新 Node 22"的组合:Node 出补丁后
+# 同名标签会被新构建覆盖,这正是期望行为;
+
+on:
+  schedule:
+    - cron: '23 * * * *' # 每小时的第 23 分钟;想更及时可改成 '*/30 * * * *'
+  push:
+    branches: [ master ]
+    paths:
+      #      - 'Dockerfile'
+      - '.github/workflows/lunatv.yml'
+      # tags:
+      # - 'v**'  # 当推送 v1.0.0 这样的 tag 时触发, 需要在包含此workflow文件的节点上打标签, 对于当前项目需要在主分支打标签并推送
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: '上游 release 标签(留空 = 最新 release)'
+        required: false
+        type: string
+      force:
+        description: '强制重新构建'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  UPSTREAM_REPO: MoonTechLab/LunaTV
+  NODE_IMAGE: node:22-alpine # ← Node 大版本就这一行;补丁版由浮动标签自动跟进
+  IMAGE: ghcr.io/${{ github.repository_owner }}/lunatv
+  STATE_FILE: lunatv/node-digest.txt # 记录上次构建用的 node 基础镜像 digest
+
+permissions:
+  contents: write # 需要把 node-digest.txt 回写提交到本仓库;同时覆盖 checkout 所需的读
+  packages: write
+
+concurrency:
+  group: rebuild-lunatv
+  cancel-in-progress: false # 构建不半路取消,避免镜像推一半/状态回写到一半
+
+jobs:
+  # ---------- 第 1 步:定版本 + 算 digest + 判断要不要构建 ----------
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      node_digest: ${{ steps.node.outputs.digest }}
+      should_build: ${{ steps.gate.outputs.should_build }}
+    steps:
+      - name: Checkout 本仓库(读状态文件)
+        uses: actions/checkout@v4
+
+      - name: 解析要构建的上游版本
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ inputs.upstream_tag }}"
+          if [ -z "$tag" ]; then
+            tag=$(gh api "repos/${{ env.UPSTREAM_REPO }}/releases/latest" --jq .tag_name)
+          fi
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "::error::拿不到上游 release 标签"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "上游目标版本:$tag"
+
+      - name: 解析 node:22-alpine 当前 digest
+        id: node
+        run: |
+          digest=$(docker buildx imagetools inspect "${{ env.NODE_IMAGE }}" | awk '/^Digest:/ {print $2; exit}')
+          if [ -z "$digest" ]; then
+            echo "::error::拿不到 ${{ env.NODE_IMAGE }} 的 digest"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "${{ env.NODE_IMAGE }} 当前 digest:$digest"
+
+      - name: 登录 GHCR(为下一步查镜像)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 判断要不要构建(上游新版 / Node 已更新 / 强制)
+        id: gate
+        run: |
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "手动强制构建"
+            exit 0
+          fi
+          if ! docker buildx imagetools inspect "${{ env.IMAGE }}:${{ steps.resolve.outputs.tag }}" >/dev/null 2>&1; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "该上游版本尚未构建,需要构建"
+            exit 0
+          fi
+          recorded=""
+          if [ -f "${{ env.STATE_FILE }}" ]; then
+            recorded=$(tr -d '[:space:]' < "${{ env.STATE_FILE }}")
+          fi
+          if [ "$recorded" != "${{ steps.node.outputs.digest }}" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Node 基础镜像已更新:上次构建用 ${recorded:-无记录},当前 ${{ steps.node.outputs.digest }}"
+            exit 0
+          fi
+          echo "should_build=false" >> "$GITHUB_OUTPUT"
+          echo "上游版本已构建、Node 也没变,跳过本轮"
+
+  # ---------- 第 2 步:单 job 双架构构建并推送 ----------
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 上游源码(指定 release 标签)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ needs.check.outputs.tag }}
+
+      - name: 把 Dockerfile 的 Node 换成最新 v22 并校验
+        run: |
+          echo "== 替换前 =="
+          grep '^FROM' Dockerfile
+          sed -i -E 's|^FROM node:[^[:space:]]+|FROM ${{ env.NODE_IMAGE }}|' Dockerfile
+          echo "== 替换后 =="
+          grep '^FROM' Dockerfile
+          # 确定性校验:每一处 FROM node: 的镜像都必须恰好等于目标,
+          # 否则说明上游改了基础镜像写法、自动替换不可信,宁可让本轮失败报警;
+          refs=$(grep '^FROM node:' Dockerfile | awk '{print $2}')
+          if [ -z "$refs" ]; then
+            echo "::error::Dockerfile 里找不到 FROM node: 行"
+            exit 1
+          fi
+          if echo "$refs" | grep -Fvx '${{ env.NODE_IMAGE }}' >/dev/null; then
+            echo "::error::仍有未被替换的 node 基础镜像"
+            exit 1
+          fi
+          echo "校验通过:全部 FROM node: 已替换为 ${{ env.NODE_IMAGE }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          # file: ./Dockerfile 代表使用代码根目录下的 Dockerfile
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.check.outputs.tag }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------- 第 3 步:构建成功后回写状态(记录本次用的 Node digest) ----------
+  record:
+    needs: [ check, build ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 本仓库
+        uses: actions/checkout@v4
+
+      - name: 回写 node-digest.txt 并提交
+        run: |
+          echo "${{ needs.check.outputs.node_digest }}" > "${{ env.STATE_FILE }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${{ env.STATE_FILE }}"
+          if git diff --cached --quiet; then
+            echo "状态无变化,无需提交"
+          else
+            git commit -m "state: lunatv ${{ needs.check.outputs.tag }} built on node base ${{ needs.check.outputs.node_digest }}"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+            echo "已记录本次 Node 基础镜像 digest"
+          fi
