@@ -24,7 +24,7 @@ name: Rebuild LunaTV (Node 22)
 
 on:
   schedule:
-    - cron: '23 * * * *' # 每小时的第 23 分钟;想更及时可改成 '*/30 * * * *'
+    - cron: '23 2 * * *'
   push:
     branches: [ master ]
     paths:
