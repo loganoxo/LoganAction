@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 TARGET_PLATFORM="$1"
 XRAY_VERSION="$2"
