@@ -2,6 +2,7 @@
 
 XRAY_VERSION="v26.6.27"
 TARGET_PLATFORM="$1"
+
 if [ -z "$TARGET_PLATFORM" ]; then
     ARCH="amd64"
 else
